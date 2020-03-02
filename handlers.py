@@ -1,35 +1,9 @@
 from http.server import BaseHTTPRequestHandler
 from urllib import parse
+import base64 
 
 from routes.main import routes
 
-def _get_request_info(req):
-    parsed_path = parse.urlparse(req.path)
-    message_parts = [
-        'CLIENT VALUES:',
-        'client_address={} ({})'.format(
-            req.client_address,
-            req.address_string()),
-        'command={}'.format(req.command),
-        'path={}'.format(req.path),
-        'real path={}'.format(parsed_path.path),
-        'query={}'.format(parsed_path.query),
-        'request_version={}'.format(req.request_version),
-        '',
-        'SERVER VALUES:',
-        'server_version={}'.format(req.server_version),
-        'sys_version={}'.format(req.sys_version),
-        'protocol_version={}'.format(req.protocol_version),
-        '',
-        'HEADERS RECEIVED:',
-    ]
-    for name, value in sorted(req.headers.items()):
-        message_parts.append(
-            '{}={}'.format(name, value.rstrip())
-        )
-    message_parts.append('')
-    message = '\r\n'.join(message_parts)
-    return message
 
 class BaseHandler(BaseHTTPRequestHandler):
 
@@ -40,21 +14,64 @@ class BaseHandler(BaseHTTPRequestHandler):
         return
 
     def do_GET(self):
-        if self.path in routes:
-            content = routes[self.path]
-        else:
-            content = None
-        self.respond(content)
+        handler = self.route_request(self.path)
+        self.response(handler)
 
-    def handle_http(self, status, content_type):
-        self.send_response(status)
-        self.send_header('Content-Type', content_type)
+    def response(self, handler):
+        self.send_response(handler.status_code)
+        for header,value in handler.get_response_headers():
+            self.send_header(header, value)
         self.end_headers()
+        self.wfile.write(handler.get_contents())
 
-    def respond(self, message=None):
-        status = 200 if message else 404
-        message = message or _get_request_info(self)
+    def route_request(self, path):
+        if path == '/':
+            return RequestHandler()
+        elif path == '/basic':
+            return BasicAuthHandler(self.headers.get('Authorization'))
+        else:
+            return NotFoundHandler()
 
-        self.handle_http(status, 'text/plain; charset=utf-8')
-        self.wfile.write(message.encode('utf-8'))
 
+class RequestHandler():
+    
+    def __init__(self):
+        self.headers = {}
+        self.status_code = 200
+        self.add_response_header('Content-Type', 'text/plain; charset=utf-8')
+        self.contents = 'Test auth server'
+
+    def get_contents(self):
+        return bytes(self.contents, 'UTF-8')
+
+    def get_response_headers(self):
+        return self.headers.items()
+
+    def add_response_header(self, header, value):
+        self.headers[header] = value
+
+
+class BasicAuthHandler(RequestHandler):
+    
+    def __init__(self, auth_header):
+        super().__init__()
+        user = 'admin'
+        pswd = 'pass'
+        if auth_header == 'Basic {}'.format(self.get_basic_key(user,pswd)):
+            self.status_code = 200
+            self.contents = 'Basic Auth OK'
+        else:
+            self.status_code = 401
+            self.add_response_header('WWW-Authenticate', 'Basic realm="Auth Server"')
+            self.contents = 'Login'
+
+    def get_basic_key(self, username, password):
+        return str(base64.b64encode(bytes('{}:{}'.format(username, password), 'utf-8')).decode('ascii'))
+
+
+class NotFoundHandler(RequestHandler):
+    
+    def __init__(self):
+        super().__init__()
+        self.status_code = 404
+        self.contents = 'Not Found'
